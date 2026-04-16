@@ -38,6 +38,13 @@ HERMES_HOME = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
 ENV_FILE = Path(HERMES_HOME) / ".env"
 PAIRING_DIR = Path(HERMES_HOME) / "pairing"
 PAIRING_TTL = 3600
+HERMES_BIN_DIR = Path(HERMES_HOME) / "bin"
+HERMES_RUNTIME_DIR = Path(HERMES_HOME) / "runtime"
+HERMES_RUNTIME_META = HERMES_RUNTIME_DIR / "install-meta.json"
+INSTALL_SCRIPT = Path(__file__).parent / "install_hermes.sh"
+GH_CONFIG_DIR = os.environ.get("GH_CONFIG_DIR", str(Path.home() / ".config" / "gh"))
+
+os.environ["PATH"] = f"{HERMES_BIN_DIR}:{os.environ.get('PATH', '')}"
 
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
@@ -176,6 +183,13 @@ def write_env(path: Path, data: dict[str, str]) -> None:
     path.write_text("\n".join(lines))
 
 
+def read_runtime_meta() -> dict:
+    try:
+        return json.loads(HERMES_RUNTIME_META.read_text()) if HERMES_RUNTIME_META.exists() else {}
+    except Exception:
+        return {}
+
+
 def mask(data: dict[str, str]) -> dict[str, str]:
     return {
         k: (v[:8] + "***" if len(v) > 8 else "***") if k in SECRET_KEYS and v else v
@@ -232,8 +246,12 @@ class Gateway:
             # .env values take priority over Railway env vars.
             # We build the env this way so hermes's own dotenv loading
             # (which reads the same file) doesn't shadow our values.
-            env = {**os.environ, "HERMES_HOME": HERMES_HOME}
+            env = {**os.environ, "HERMES_HOME": HERMES_HOME, "GH_CONFIG_DIR": GH_CONFIG_DIR}
             env.update(read_env(ENV_FILE))
+            if env.get("GITHUB_TOKEN") and not env.get("GH_TOKEN"):
+                env["GH_TOKEN"] = env["GITHUB_TOKEN"]
+            if env.get("GH_TOKEN") and not env.get("GITHUB_TOKEN"):
+                env["GITHUB_TOKEN"] = env["GH_TOKEN"]
             model = env.get("LLM_MODEL", "")
             provider_key = next((env.get(k, "") for k in PROVIDER_KEYS if env.get(k)), "")
             print(f"[gateway] model={model or '⚠ NOT SET'} | provider_key={'set' if provider_key else '⚠ NOT SET'}", flush=True)
@@ -291,6 +309,90 @@ class Gateway:
 
 
 gw = Gateway()
+
+
+class HermesRuntime:
+    def __init__(self):
+        self.state = "idle"
+        self.last_error = ""
+        self.last_started_at: float | None = None
+        self.last_finished_at: float | None = None
+        self.task: asyncio.Task | None = None
+
+    @property
+    def busy(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    def status(self) -> dict:
+        meta = read_runtime_meta()
+        state = self.state
+        if state == "idle":
+            state = "ready" if (HERMES_BIN_DIR / "hermes").exists() else "missing"
+        return {
+            "state": state,
+            "busy": self.busy,
+            "last_error": self.last_error or None,
+            "last_started_at": self.last_started_at,
+            "last_finished_at": self.last_finished_at,
+            "meta": meta,
+        }
+
+    def start_update(self, force: bool = True) -> bool:
+        if self.busy:
+            return False
+        self.state = "updating"
+        self.last_error = ""
+        self.last_started_at = time.time()
+        self.last_finished_at = None
+        self.task = asyncio.create_task(self._update(force=force))
+        return True
+
+    async def _update(self, force: bool = True) -> None:
+        was_running = gw.proc is not None and gw.proc.returncode is None
+        mode = "--force" if force else "--missing-only"
+        env = {**os.environ, "HERMES_HOME": HERMES_HOME}
+        try:
+            if was_running:
+                gw.logs.append("[runtime] Stopping gateway for Hermes update.")
+                await gw.stop()
+
+            proc = await asyncio.create_subprocess_exec(
+                str(INSTALL_SCRIPT), mode,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+            )
+            assert proc.stdout
+            async for raw in proc.stdout:
+                line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
+                if line:
+                    gw.logs.append(f"[runtime] {line}")
+
+            code = await proc.wait()
+            if code != 0:
+                raise RuntimeError(f"Hermes installer exited with code {code}")
+
+            self.state = "ready"
+            gw.logs.append("[runtime] Hermes update completed.")
+
+            if was_running:
+                gw.logs.append("[runtime] Restarting gateway with updated Hermes.")
+                await gw.start()
+        except Exception as e:
+            self.state = "error"
+            self.last_error = str(e)
+            gw.logs.append(f"[runtime] Update failed: {e}")
+            if was_running:
+                try:
+                    gw.logs.append("[runtime] Restarting gateway with previous Hermes install.")
+                    await gw.start()
+                except Exception as restart_error:
+                    gw.logs.append(f"[runtime] Failed to restore gateway: {restart_error}")
+        finally:
+            self.last_finished_at = time.time()
+
+
+runtime = HermesRuntime()
 cfg_lock = asyncio.Lock()
 
 
@@ -320,6 +422,8 @@ async def api_config_put(request: Request):
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
     try:
         restart = body.pop("_restart", False)
+        if restart and runtime.busy:
+            return JSONResponse({"error": "Hermes is updating"}, status_code=409)
         new_vars = body.get("vars", {})
         async with cfg_lock:
             existing = read_env(ENV_FILE)
@@ -348,7 +452,12 @@ async def api_status(request: Request):
         name: {"configured": bool(v := data.get(key,"")) and v.lower() not in ("false","0","no")}
         for name, key in CHANNEL_MAP.items()
     }
-    return JSONResponse({"gateway": gw.status(), "providers": providers, "channels": channels})
+    return JSONResponse({
+        "gateway": gw.status(),
+        "providers": providers,
+        "channels": channels,
+        "runtime": runtime.status(),
+    })
 
 
 async def api_logs(request: Request):
@@ -358,24 +467,41 @@ async def api_logs(request: Request):
 
 async def api_gw_start(request: Request):
     if err := guard(request): return err
+    if runtime.busy:
+        return JSONResponse({"error": "Hermes is updating"}, status_code=409)
     asyncio.create_task(gw.start())
     return JSONResponse({"ok": True})
 
 
 async def api_gw_stop(request: Request):
     if err := guard(request): return err
+    if runtime.busy:
+        return JSONResponse({"error": "Hermes is updating"}, status_code=409)
     asyncio.create_task(gw.stop())
     return JSONResponse({"ok": True})
 
 
 async def api_gw_restart(request: Request):
     if err := guard(request): return err
+    if runtime.busy:
+        return JSONResponse({"error": "Hermes is updating"}, status_code=409)
     asyncio.create_task(gw.restart())
+    return JSONResponse({"ok": True})
+
+
+async def api_runtime_update(request: Request):
+    if err := guard(request): return err
+    if not INSTALL_SCRIPT.exists():
+        return JSONResponse({"error": "Installer script not found"}, status_code=500)
+    if not runtime.start_update(force=True):
+        return JSONResponse({"error": "Hermes update already in progress"}, status_code=409)
     return JSONResponse({"ok": True})
 
 
 async def api_config_reset(request: Request):
     if err := guard(request): return err
+    if runtime.busy:
+        return JSONResponse({"error": "Hermes is updating"}, status_code=409)
     asyncio.create_task(gw.stop())
     async with cfg_lock:
         if ENV_FILE.exists():
@@ -500,6 +626,7 @@ routes = [
     Route("/api/gateway/start",         api_gw_start,        methods=["POST"]),
     Route("/api/gateway/stop",          api_gw_stop,         methods=["POST"]),
     Route("/api/gateway/restart",       api_gw_restart,      methods=["POST"]),
+    Route("/api/runtime/update",        api_runtime_update,  methods=["POST"]),
     Route("/api/config/reset",          api_config_reset,    methods=["POST"]),
     Route("/api/pairing/pending",       api_pairing_pending),
     Route("/api/pairing/approve",       api_pairing_approve, methods=["POST"]),

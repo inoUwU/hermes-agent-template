@@ -103,6 +103,7 @@
     transition: border-color 0.15s, color 0.15s;
   }
   .header-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .header-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
   .header-issue-link {
     font-family: var(--font-mono);
@@ -669,7 +670,8 @@
   </div>
   <div class="header-spacer"></div>
   <a class="header-issue-link" href="https://github.com/praveen-ks-2001/hermes-agent-template/issues" target="_blank" rel="noopener">⚠ Report issue</a>
-  <button class="header-btn" @click="restartGateway()">↺ Restart</button>
+  <button class="header-btn" @click="updateHermes()" :disabled="runtime.busy" x-text="runtime.busy ? 'Updating…' : '⬆ Update Hermes'"></button>
+  <button class="header-btn" @click="restartGateway()" :disabled="runtime.busy">↺ Restart</button>
 </div>
 
 <!-- Layout -->
@@ -949,12 +951,46 @@
             <div class="stat-label">Model</div>
             <div class="stat-value" style="font-size:12px;word-break:break-all;" x-text="vars.LLM_MODEL||'—'"></div>
           </div>
+          <div class="stat-card">
+            <div class="stat-label">Hermes Runtime</div>
+            <div class="stat-value"
+                 :class="{green: runtime.state==='ready', red: runtime.state==='error'||runtime.state==='missing', yellow: runtime.state==='updating'}"
+                 x-text="runtime.state||'—'"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Hermes Commit</div>
+            <div class="stat-value" style="font-size:16px;" x-text="runtime.meta?.short_commit || '—'"></div>
+          </div>
         </div>
 
         <div class="action-row">
-          <button class="btn success" @click="startGw()"        :disabled="gw.state==='running'">▶ Start</button>
-          <button class="btn danger"  @click="stopGw()"         :disabled="gw.state==='stopped'">■ Stop</button>
-          <button class="btn"         @click="restartGateway()">↺ Restart</button>
+          <button class="btn success" @click="startGw()"        :disabled="gw.state==='running' || runtime.busy">▶ Start</button>
+          <button class="btn danger"  @click="stopGw()"         :disabled="gw.state==='stopped' || runtime.busy">■ Stop</button>
+          <button class="btn"         @click="restartGateway()" :disabled="runtime.busy">↺ Restart</button>
+          <button class="btn"         @click="updateHermes()"   :disabled="runtime.busy" x-text="runtime.busy ? 'Updating…' : '⬆ Update Hermes'"></button>
+        </div>
+
+        <div class="section-label">Hermes Runtime</div>
+        <div class="card">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;">
+            <div>
+              <div class="field-label">Version</div>
+              <div style="font-family:var(--font-mono);font-size:13px;word-break:break-all;" x-text="runtime.meta?.version || '—'"></div>
+            </div>
+            <div>
+              <div class="field-label">Source Ref</div>
+              <div style="font-family:var(--font-mono);font-size:13px;word-break:break-all;" x-text="runtime.meta?.repo_ref || '—'"></div>
+            </div>
+            <div>
+              <div class="field-label">Installed</div>
+              <div style="font-family:var(--font-mono);font-size:13px;" x-text="fmtIsoDate(runtime.meta?.installed_at)"></div>
+            </div>
+            <div>
+              <div class="field-label">Binary</div>
+              <div style="font-family:var(--font-mono);font-size:13px;word-break:break-all;" x-text="runtime.meta?.binary || '—'"></div>
+            </div>
+          </div>
+          <p class="hint" style="margin-top:12px;" x-show="runtime.last_error" x-text="runtime.last_error"></p>
         </div>
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
@@ -1194,6 +1230,7 @@ function app() {
     vars: {},
     gw: {},
     status: {},
+    runtime: {},
     logs: [],
     pending: [],
     approved: [],
@@ -1318,7 +1355,12 @@ function app() {
     async loadStatus() {
       try {
         const r = await fetch('/api/status');
-        if (r.ok) { const d = await r.json(); this.status = d; this.gw = d.gateway||{}; }
+        if (r.ok) {
+          const d = await r.json();
+          this.status = d;
+          this.gw = d.gateway || {};
+          this.runtime = d.runtime || {};
+        }
       } catch {}
     },
 
@@ -1343,9 +1385,43 @@ function app() {
       } catch {}
     },
 
-    async startGw()        { await fetch('/api/gateway/start',   {method:'POST'}); this.notify('Starting…',   true); setTimeout(()=>this.loadStatus(),1000); },
+    async startGw() {
+      const r = await fetch('/api/gateway/start', {method:'POST'});
+      if (r.ok) {
+        this.notify('Starting…', true);
+        setTimeout(() => this.loadStatus(), 1000);
+      } else {
+        const e = await r.json().catch(() => ({}));
+        this.notify(e?.error || 'Start failed', false);
+      }
+    },
     async stopGw()         { await fetch('/api/gateway/stop',    {method:'POST'}); this.notify('Stopping…',   true); setTimeout(()=>this.loadStatus(),1000); },
-    async restartGateway() { await fetch('/api/gateway/restart', {method:'POST'}); this.notify('Restarting…', true); setTimeout(()=>this.loadStatus(),2000); },
+    async restartGateway() {
+      const r = await fetch('/api/gateway/restart', {method:'POST'});
+      if (r.ok) {
+        this.notify('Restarting…', true);
+        setTimeout(() => this.loadStatus(), 2000);
+      } else {
+        const e = await r.json().catch(() => ({}));
+        this.notify(e?.error || 'Restart failed', false);
+      }
+    },
+    async updateHermes() {
+      if (!confirm('Update Hermes now? The gateway will restart if it is currently running.')) return;
+      try {
+        const r = await fetch('/api/runtime/update', { method: 'POST' });
+        if (r.ok) {
+          this.page = 'logs';
+          this.notify('Updating Hermes…', true);
+          await this.loadStatus();
+        } else {
+          const e = await r.json().catch(() => ({}));
+          this.notify(e?.error || 'Update failed', false);
+        }
+      } catch (e) {
+        this.notify('Update failed: ' + e.message, false);
+      }
+    },
 
     async approve(platform, code) {
       const r = await fetch('/api/pairing/approve', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform,code}) });
@@ -1370,6 +1446,13 @@ function app() {
       if (s==null) return '';
       const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=s%60;
       return h>0?`${h}h ${m}m ${sec}s`:m>0?`${m}m ${sec}s`:`${sec}s`;
+    },
+    fmtIsoDate(value) {
+      if (!value) return '—';
+      const d = new Date(value);
+      return Number.isNaN(d.getTime())
+        ? value
+        : d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
     },
     notify(msg, ok) {
       const el = this.$refs.toast;

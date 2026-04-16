@@ -14,6 +14,8 @@ Deploy [Hermes Agent](https://github.com/NousResearch/hermes-agent) on [Railway]
 - **Admin Dashboard** — dark-themed UI to configure providers, channels, tools, and manage the gateway
 - **One-Page Setup** — provider dropdown, checkbox-based channel/tool toggles — no config files to edit
 - **Gateway Management** — start, stop, restart the Hermes gateway from the browser
+- **Runtime Hermes Updates** — install Hermes on first boot and update it later from the admin UI without SSH
+- **GitHub CLI Ready** — `gh` and `gh copilot` are available inside the container for agent tasks
 - **Live Status** — stat cards for gateway state, uptime, model, and pending pairing requests
 - **Live Logs** — streaming gateway log viewer
 - **User Pairing** — approve or deny users who message your bot, revoke access anytime
@@ -81,6 +83,16 @@ Telegram, Discord, Slack, WhatsApp, Email, Mattermost, Matrix
 
 Parallel (search), Firecrawl (scraping), Tavily (search), FAL (image gen), Browserbase, GitHub, OpenAI Voice (Whisper/TTS), Honcho (memory)
 
+## GitHub CLI Tools
+
+The container includes both the GitHub CLI (`gh`) and GitHub Copilot CLI (`gh copilot`).
+
+- `gh` is installed in the image from GitHub's official apt repository.
+- `gh copilot` is bootstrapped at runtime into the persistent gh config directory under `/data/.config/gh`, so it stays available across redeploys that keep the `/data` volume.
+- The dashboard's `GITHUB_TOKEN` value is also exported as `GH_TOKEN` when the gateway starts, so the CLI tools can authenticate without a separate token field.
+
+To enable GitHub operations for the agent, turn on the **GitHub** tool in the admin dashboard and paste a GitHub token with the scopes you need.
+
 ## Architecture
 
 ```
@@ -93,6 +105,18 @@ Railway Container
 ```
 
 The admin server runs on `$PORT` and manages the Hermes gateway as a child process. Config is stored in `/data/.hermes/.env` and `/data/.hermes/config.yaml`. Gateway stdout/stderr is captured into a ring buffer and streamed to the Logs panel.
+
+Hermes itself is installed at runtime into `/data/.hermes/runtime/venv`, with `/data/.hermes/bin/hermes` used as the active CLI. On first boot the container bootstraps that runtime install automatically, and the admin UI can rerun the same installer later to pull a newer Hermes revision without rebuilding the image.
+
+## Updating Hermes After Deploy
+
+1. Open the admin dashboard.
+2. Click **Update Hermes** from the header or the **Status** page.
+3. If the gateway is running, it will stop, update Hermes, and start again automatically.
+4. If the update fails, the previous Hermes runtime is restored automatically.
+5. Watch progress in the **Logs** panel.
+
+By default the installer tracks the `main` branch of `https://github.com/NousResearch/hermes-agent.git`. You can pin a different branch or tag by setting the `HERMES_REPO_REF` environment variable on the container.
 
 ## Running Locally
 
