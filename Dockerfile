@@ -26,6 +26,6 @@ RUN chmod +x /app/install_hermes.sh /app/install_github_tools.sh /app/start.sh /
 ENV HOME=/data
 ENV HERMES_HOME=/data/.hermes
 ENV GH_CONFIG_DIR=/data/.config/gh
-ENV PATH=/data/.hermes/bin:${PATH}
+ENV PATH=${PATH}:/data/.hermes/bin
 
 CMD ["/app/start.sh"]

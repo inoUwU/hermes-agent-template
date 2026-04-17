@@ -44,8 +44,11 @@ HERMES_RUNTIME_META = HERMES_RUNTIME_DIR / "install-meta.json"
 INSTALL_SCRIPT = Path(__file__).parent / "install_hermes.sh"
 GH_INSTALL_SCRIPT = Path(__file__).parent / "install_github_tools.sh"
 GH_CONFIG_DIR = os.environ.get("GH_CONFIG_DIR", str(Path.home() / ".config" / "gh"))
+HERMES_WRAPPER = Path("/usr/local/bin/hermes")
 
-os.environ["PATH"] = f"{HERMES_BIN_DIR}:{os.environ.get('PATH', '')}"
+if str(HERMES_BIN_DIR) not in os.environ.get("PATH", "").split(":"):
+    current_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = f"{current_path}:{HERMES_BIN_DIR}" if current_path else str(HERMES_BIN_DIR)
 
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
@@ -258,8 +261,9 @@ class Gateway:
             print(f"[gateway] model={model or '⚠ NOT SET'} | provider_key={'set' if provider_key else '⚠ NOT SET'}", flush=True)
             # Write config.yaml so hermes picks up the model (env vars alone aren't always enough)
             write_config_yaml(read_env(ENV_FILE))
+            hermes_cmd = str(HERMES_WRAPPER) if HERMES_WRAPPER.exists() else "hermes"
             self.proc = await asyncio.create_subprocess_exec(
-                "hermes", "gateway",
+                hermes_cmd, "gateway",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=env,

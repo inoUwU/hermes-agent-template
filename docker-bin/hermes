@@ -8,11 +8,16 @@ INSTALL_SCRIPT="/app/install_hermes.sh"
 export HERMES_HOME
 export PATH="${HERMES_HOME}/bin:${PATH}"
 
-if [[ ! -x "$BIN_PATH" ]] && [[ -x "$INSTALL_SCRIPT" ]]; then
+runtime_is_healthy() {
+  [[ -x "$BIN_PATH" ]] || return 1
+  "$BIN_PATH" --version >/dev/null 2>&1
+}
+
+if ! runtime_is_healthy && [[ -x "$INSTALL_SCRIPT" ]]; then
   "$INSTALL_SCRIPT" --missing-only >&2
 fi
 
-if [[ ! -x "$BIN_PATH" ]]; then
+if ! runtime_is_healthy; then
   echo "Hermes CLI is not available at ${BIN_PATH}." >&2
   exit 127
 fi

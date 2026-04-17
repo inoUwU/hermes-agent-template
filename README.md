@@ -108,7 +108,7 @@ Railway Container
 
 The admin server runs on `$PORT` and manages the Hermes gateway as a child process. Config is stored in `/data/.hermes/.env` and `/data/.hermes/config.yaml`. Gateway stdout/stderr is captured into a ring buffer and streamed to the Logs panel.
 
-Hermes itself is installed at runtime into `/data/.hermes/runtime/venv`, with `/data/.hermes/bin/hermes` used as the active CLI. A lightweight `hermes` wrapper is baked into the image so the command always exists; when the persistent runtime is missing it bootstraps `/data/.hermes` on demand and then hands off to the installed binary. On first boot the web server still comes up immediately for Railway health checks and bootstraps Hermes in the background. Existing `/data` volumes are reused as-is, so saved config, pairing state, and prior Hermes installs carry forward across redeploys.
+Hermes itself is installed at runtime into `/data/.hermes/runtime/venv`, with `/data/.hermes/bin/hermes` used as the persistent CLI target. A lightweight `hermes` wrapper is baked into the image and resolved first on `PATH`, so the command always exists even if an older `/data` runtime is stale or partially broken. When the persistent runtime is missing or unhealthy, the wrapper rebootsraps `/data/.hermes` on demand and then hands off to the installed binary. On first boot the web server still comes up immediately for Railway health checks and bootstraps Hermes in the background. Existing `/data` volumes are reused as-is, so saved config, pairing state, and prior Hermes installs carry forward across redeploys.
 
 ## Updating Hermes After Deploy
 

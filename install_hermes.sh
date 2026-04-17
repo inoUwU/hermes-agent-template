@@ -29,6 +29,11 @@ log() {
   echo "[install-hermes] $*"
 }
 
+runtime_is_healthy() {
+  [[ -x "$BIN_DIR/hermes" ]] || return 1
+  "$BIN_DIR/hermes" --version >/dev/null 2>&1
+}
+
 cleanup() {
   rm -rf "$TMP_SRC" "$TMP_VENV" "$TMP_META"
   if [[ "$INSTALL_COMPLETE" -eq 1 ]]; then
@@ -64,9 +69,14 @@ if command -v flock >/dev/null 2>&1; then
   flock 9
 fi
 
-if [[ "$MODE" == "--missing-only" && -x "$BIN_DIR/hermes" ]]; then
-  log "Existing runtime install found at $BIN_DIR/hermes; skipping bootstrap."
-  exit 0
+if [[ "$MODE" == "--missing-only" ]]; then
+  if runtime_is_healthy; then
+    log "Existing runtime install found at $BIN_DIR/hermes; skipping bootstrap."
+    exit 0
+  fi
+  if [[ -e "$BIN_DIR/hermes" ]]; then
+    log "Existing runtime at $BIN_DIR/hermes is unhealthy; reinstalling."
+  fi
 fi
 
 rm -rf "$TMP_SRC" "$TMP_VENV" "$TMP_META" "$PREV_SRC" "$PREV_VENV"

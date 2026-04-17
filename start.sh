@@ -6,6 +6,6 @@ export GH_CONFIG_DIR="/data/.config/gh"
 if [ -n "${GITHUB_TOKEN:-}" ] && [ -z "${GH_TOKEN:-}" ]; then
   export GH_TOKEN="${GITHUB_TOKEN}"
 fi
-export PATH="/data/.hermes/bin:${PATH}"
+export PATH="${PATH}:/data/.hermes/bin"
 
 exec python /app/server.py
