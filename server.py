@@ -319,7 +319,7 @@ class HermesRuntime:
         self.last_started_at: float | None = None
         self.last_finished_at: float | None = None
         self.task: asyncio.Task | None = None
-        self.start_gateway_when_ready = False
+        self.autostart_gateway_after_update = False
 
     @property
     def busy(self) -> bool:
@@ -346,13 +346,13 @@ class HermesRuntime:
         self.last_error = ""
         self.last_started_at = time.time()
         self.last_finished_at = None
-        self.start_gateway_when_ready = start_gateway_when_ready
+        self.autostart_gateway_after_update = start_gateway_when_ready
         self.task = asyncio.create_task(self._update(force=force))
         return True
 
     async def _update(self, force: bool = True) -> None:
         was_running = gw.proc is not None and gw.proc.returncode is None
-        should_start_gateway = was_running or self.start_gateway_when_ready
+        should_start_gateway = was_running or self.autostart_gateway_after_update
         mode = "--force" if force else "--missing-only"
         env = {**os.environ, "HERMES_HOME": HERMES_HOME}
         try:
@@ -366,7 +366,8 @@ class HermesRuntime:
                 stderr=asyncio.subprocess.STDOUT,
                 env=env,
             )
-            assert proc.stdout
+            if proc.stdout is None:
+                raise RuntimeError("Hermes installer stdout was not captured")
             async for raw in proc.stdout:
                 line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
                 if line:
@@ -393,7 +394,7 @@ class HermesRuntime:
                 except Exception as restart_error:
                     gw.logs.append(f"[runtime] Failed to restore gateway: {restart_error}")
         finally:
-            self.start_gateway_when_ready = False
+            self.autostart_gateway_after_update = False
             self.last_finished_at = time.time()
 
 
@@ -412,7 +413,8 @@ async def bootstrap_github_tools() -> None:
             stderr=asyncio.subprocess.STDOUT,
             env=env,
         )
-        assert proc.stdout
+        if proc.stdout is None:
+            raise RuntimeError("GitHub tools installer stdout was not captured")
         async for raw in proc.stdout:
             line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
             if line:
@@ -641,7 +643,7 @@ async def auto_start():
         if runtime.start_update(force=False, start_gateway_when_ready=has_provider):
             print("[server] Hermes runtime missing — bootstrapping in background.", flush=True)
         else:
-            print("[server] Hermes runtime bootstrap already in progress.", flush=True)
+            print("[server] Hermes runtime update was already in progress during startup.", flush=True)
         if not has_provider:
             print("[server] No provider key found — gateway not started. Configure one in the admin UI.", flush=True)
     if GH_INSTALL_SCRIPT.exists():
