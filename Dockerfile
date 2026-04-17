@@ -17,12 +17,15 @@ RUN mkdir -p /data/.hermes
 
 COPY server.py /app/server.py
 COPY templates/ /app/templates/
+COPY docker-bin/ /usr/local/bin/
 COPY install_hermes.sh /app/install_hermes.sh
 COPY install_github_tools.sh /app/install_github_tools.sh
 COPY start.sh /app/start.sh
-RUN chmod +x /app/install_hermes.sh /app/install_github_tools.sh /app/start.sh
+RUN chmod +x /app/install_hermes.sh /app/install_github_tools.sh /app/start.sh /usr/local/bin/hermes /usr/local/bin/copilot
 
 ENV HOME=/data
 ENV HERMES_HOME=/data/.hermes
+ENV GH_CONFIG_DIR=/data/.config/gh
+ENV PATH=/data/.hermes/bin:${PATH}
 
 CMD ["/app/start.sh"]

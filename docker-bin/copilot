@@ -1,0 +1,18 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+GH_CONFIG_DIR="${GH_CONFIG_DIR:-${HOME:-/data}/.config/gh}"
+INSTALL_SCRIPT="/app/install_github_tools.sh"
+
+export GH_CONFIG_DIR
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "GitHub CLI (gh) is not installed." >&2
+  exit 127
+fi
+
+if [[ -x "$INSTALL_SCRIPT" ]]; then
+  "$INSTALL_SCRIPT" --missing-only >&2
+fi
+
+exec gh copilot -- "$@"

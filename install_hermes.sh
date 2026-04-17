@@ -13,6 +13,7 @@ SRC_DIR="${HERMES_SRC_DIR:-$RUNTIME_DIR/hermes-agent}"
 VENV_DIR="${HERMES_VENV_DIR:-$RUNTIME_DIR/venv}"
 BIN_DIR="${HERMES_BIN_DIR:-$HERMES_HOME/bin}"
 META_FILE="${HERMES_RUNTIME_META:-$RUNTIME_DIR/install-meta.json}"
+LOCK_FILE="${HERMES_INSTALL_LOCK_FILE:-$RUNTIME_DIR/install.lock}"
 REPO_URL="${HERMES_REPO_URL:-https://github.com/NousResearch/hermes-agent.git}"
 REPO_REF="${HERMES_REPO_REF:-main}"
 TMP_SRC="${RUNTIME_DIR}/hermes-agent.next"
@@ -57,12 +58,17 @@ rollback() {
 trap cleanup EXIT
 trap rollback ERR INT TERM
 
+mkdir -p "$RUNTIME_DIR" "$BIN_DIR" "$UV_CACHE_DIR"
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$LOCK_FILE"
+  flock 9
+fi
+
 if [[ "$MODE" == "--missing-only" && -x "$BIN_DIR/hermes" ]]; then
   log "Existing runtime install found at $BIN_DIR/hermes; skipping bootstrap."
   exit 0
 fi
 
-mkdir -p "$RUNTIME_DIR" "$BIN_DIR" "$UV_CACHE_DIR"
 rm -rf "$TMP_SRC" "$TMP_VENV" "$TMP_META" "$PREV_SRC" "$PREV_VENV"
 
 log "Fetching ${REPO_URL} (${REPO_REF})..."

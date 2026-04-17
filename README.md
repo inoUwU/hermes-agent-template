@@ -64,7 +64,7 @@ Message your Telegram bot. If you're a new user, a pairing request will appear i
 ## Environment Variables
 
 | Variable | Default | Description |
-|----------|---------|-------------|
+| -------- | ------- | ----------- |
 | `PORT` | `8080` | Web server port (set automatically by Railway) |
 | `ADMIN_USERNAME` | `admin` | Basic auth username |
 | `ADMIN_PASSWORD` | *(auto-generated)* | Basic auth password — if unset, a random password is printed to logs |
@@ -85,17 +85,19 @@ Parallel (search), Firecrawl (scraping), Tavily (search), FAL (image gen), Brows
 
 ## GitHub CLI Tools
 
-The container includes both the GitHub CLI (`gh`) and GitHub Copilot CLI (`gh copilot`).
+The container includes the GitHub CLI (`gh`) plus a standalone `copilot` wrapper that proxies to the underlying Copilot CLI through `gh copilot`.
 
 - `gh` is installed in the image from GitHub's official apt repository.
-- `gh copilot` is bootstrapped at runtime into the persistent gh config directory under `/data/.config/gh`, so it stays available across redeploys that keep the `/data` volume.
+- On recent `gh` releases, startup warms the native `gh copilot` download cache under `/data/.local/share/gh/copilot`; on older releases it falls back to installing the legacy `gh-copilot` extension under `/data/.config/gh`.
+- `copilot` is always on the container `PATH`, forwards its arguments to the actual Copilot CLI, and fills in whichever bootstrap path is missing on first use.
+- The same bootstrap also runs automatically in the background on app start, so existing `/data` volumes keep the downloaded Copilot bits across redeploys and fresh volumes heal themselves on first use.
 - The dashboard's `GITHUB_TOKEN` value is also exported as `GH_TOKEN` when the gateway starts, so the CLI tools can authenticate without a separate token field.
 
 To enable GitHub operations for the agent, turn on the **GitHub** tool in the admin dashboard and paste a GitHub token with the scopes you need.
 
 ## Architecture
 
-```
+```text
 Railway Container
 ├── Python Admin Server (Starlette + Uvicorn)
 │   ├── /            — Admin dashboard (Basic Auth)
@@ -106,7 +108,7 @@ Railway Container
 
 The admin server runs on `$PORT` and manages the Hermes gateway as a child process. Config is stored in `/data/.hermes/.env` and `/data/.hermes/config.yaml`. Gateway stdout/stderr is captured into a ring buffer and streamed to the Logs panel.
 
-Hermes itself is installed at runtime into `/data/.hermes/runtime/venv`, with `/data/.hermes/bin/hermes` used as the active CLI. On first boot the web server now comes up immediately for Railway health checks, then bootstraps Hermes in the background. The admin UI can rerun the same installer later to pull a newer Hermes revision without rebuilding the image.
+Hermes itself is installed at runtime into `/data/.hermes/runtime/venv`, with `/data/.hermes/bin/hermes` used as the active CLI. A lightweight `hermes` wrapper is baked into the image so the command always exists; when the persistent runtime is missing it bootstraps `/data/.hermes` on demand and then hands off to the installed binary. On first boot the web server still comes up immediately for Railway health checks and bootstraps Hermes in the background. Existing `/data` volumes are reused as-is, so saved config, pairing state, and prior Hermes installs carry forward across redeploys.
 
 ## Updating Hermes After Deploy
 
