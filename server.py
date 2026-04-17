@@ -352,7 +352,7 @@ class HermesRuntime:
 
     async def _update(self, force: bool = True) -> None:
         was_running = gw.proc is not None and gw.proc.returncode is None
-        start_gateway_when_ready = was_running or self.start_gateway_when_ready
+        should_start_gateway = was_running or self.start_gateway_when_ready
         mode = "--force" if force else "--missing-only"
         env = {**os.environ, "HERMES_HOME": HERMES_HOME}
         try:
@@ -379,7 +379,7 @@ class HermesRuntime:
             self.state = "ready"
             gw.logs.append("[runtime] Hermes update completed.")
 
-            if start_gateway_when_ready:
+            if should_start_gateway:
                 gw.logs.append("[runtime] Starting gateway with available Hermes runtime.")
                 await gw.start()
         except Exception as e:
@@ -640,6 +640,8 @@ async def auto_start():
     else:
         if runtime.start_update(force=False, start_gateway_when_ready=has_provider):
             print("[server] Hermes runtime missing — bootstrapping in background.", flush=True)
+        else:
+            print("[server] Hermes runtime bootstrap already in progress.", flush=True)
         if not has_provider:
             print("[server] No provider key found — gateway not started. Configure one in the admin UI.", flush=True)
     if GH_INSTALL_SCRIPT.exists():
