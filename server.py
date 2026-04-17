@@ -367,7 +367,7 @@ class HermesRuntime:
                 env=env,
             )
             if proc.stdout is None:
-                raise RuntimeError("Hermes installer stdout was not captured (subprocess was expected to use stdout=PIPE)")
+                raise RuntimeError("Failed to capture Hermes installer output")
             async for raw in proc.stdout:
                 line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
                 if line:
@@ -414,7 +414,7 @@ async def bootstrap_github_tools() -> None:
             env=env,
         )
         if proc.stdout is None:
-            raise RuntimeError("GitHub tools installer stdout was not captured (subprocess was expected to use stdout=PIPE)")
+            raise RuntimeError("Failed to capture GitHub tools installer output")
         async for raw in proc.stdout:
             line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
             if line:
@@ -643,7 +643,7 @@ async def auto_start():
         if runtime.start_update(force=False, start_gateway_when_ready=has_provider):
             print("[server] Hermes runtime missing — bootstrapping in background.", flush=True)
         else:
-            print("[server] Hermes runtime update was already in progress during startup.", flush=True)
+            print("[server] Hermes runtime task was already active during startup.", flush=True)
         if not has_provider:
             print("[server] No provider key found — gateway not started. Configure one in the admin UI.", flush=True)
     if GH_INSTALL_SCRIPT.exists():
