@@ -17,7 +17,6 @@ LOCK_FILE="${HERMES_INSTALL_LOCK_FILE:-$RUNTIME_DIR/install.lock}"
 REPO_URL="${HERMES_REPO_URL:-https://github.com/NousResearch/hermes-agent.git}"
 REPO_REF="${HERMES_REPO_REF:-main}"
 TMP_SRC="${RUNTIME_DIR}/hermes-agent.next"
-TMP_VENV="${RUNTIME_DIR}/venv.next"
 TMP_META="${RUNTIME_DIR}/install-meta.json.next"
 PREV_SRC="${RUNTIME_DIR}/hermes-agent.prev"
 PREV_VENV="${RUNTIME_DIR}/venv.prev"
@@ -35,7 +34,7 @@ runtime_is_healthy() {
 }
 
 cleanup() {
-  rm -rf "$TMP_SRC" "$TMP_VENV" "$TMP_META"
+  rm -rf "$TMP_SRC" "$TMP_META"
   if [[ "$INSTALL_COMPLETE" -eq 1 ]]; then
     rm -rf "$PREV_SRC" "$PREV_VENV"
   fi
@@ -79,7 +78,7 @@ if [[ "$MODE" == "--missing-only" ]]; then
   fi
 fi
 
-rm -rf "$TMP_SRC" "$TMP_VENV" "$TMP_META" "$PREV_SRC" "$PREV_VENV"
+rm -rf "$TMP_SRC" "$TMP_META" "$PREV_SRC" "$PREV_VENV"
 
 log "Fetching ${REPO_URL} (${REPO_REF})..."
 git clone --depth 1 "$REPO_URL" "$TMP_SRC"
@@ -88,15 +87,6 @@ git -C "$TMP_SRC" checkout --force FETCH_HEAD
 
 commit="$(git -C "$TMP_SRC" rev-parse HEAD)"
 short_commit="$(git -C "$TMP_SRC" rev-parse --short HEAD)"
-
-log "Creating runtime virtualenv..."
-uv venv "$TMP_VENV"
-
-log "Installing Hermes into ${TMP_VENV}..."
-UV_CACHE_DIR="$UV_CACHE_DIR" uv pip install --python "$TMP_VENV/bin/python" --upgrade "$TMP_SRC[all]"
-
-version="$("$TMP_VENV/bin/hermes" --version 2>/dev/null | head -n 1 || true)"
-installed_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 if [[ -e "$SRC_DIR" ]]; then
   mv "$SRC_DIR" "$PREV_SRC"
@@ -107,8 +97,24 @@ fi
 
 ROLLBACK_READY=1
 mv "$TMP_SRC" "$SRC_DIR"
-mv "$TMP_VENV" "$VENV_DIR"
+
+# Virtualenv entry points keep absolute interpreter paths, so the venv must be
+# created at its final location instead of being moved there after install.
+log "Creating runtime virtualenv..."
+uv venv "$VENV_DIR"
+
+log "Installing Hermes into ${VENV_DIR}..."
+UV_CACHE_DIR="$UV_CACHE_DIR" uv pip install --python "$VENV_DIR/bin/python" --upgrade "$SRC_DIR[all]"
+
+version="$("$VENV_DIR/bin/hermes" --version 2>/dev/null | head -n 1 || true)"
+installed_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
 ln -sfn "$VENV_DIR/bin/hermes" "$BIN_DIR/hermes"
+
+if ! runtime_is_healthy; then
+  log "New runtime at $BIN_DIR/hermes failed health checks after install."
+  exit 1
+fi
 
 META_FILE="$TMP_META" \
 REPO_URL="$REPO_URL" \
