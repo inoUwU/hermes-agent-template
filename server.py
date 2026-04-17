@@ -367,7 +367,7 @@ class HermesRuntime:
                 env=env,
             )
             if proc.stdout is None:
-                raise RuntimeError("Hermes installer stdout was not captured")
+                raise RuntimeError("Hermes installer stdout was not captured (subprocess was expected to use stdout=PIPE)")
             async for raw in proc.stdout:
                 line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
                 if line:
@@ -414,14 +414,14 @@ async def bootstrap_github_tools() -> None:
             env=env,
         )
         if proc.stdout is None:
-            raise RuntimeError("GitHub tools installer stdout was not captured")
+            raise RuntimeError("GitHub tools installer stdout was not captured (subprocess was expected to use stdout=PIPE)")
         async for raw in proc.stdout:
             line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
             if line:
                 gw.logs.append(f"[bootstrap] {line}")
         code = await proc.wait()
         if code != 0:
-            gw.logs.append(f"[bootstrap] GitHub tools bootstrap exited with code {code}")
+            gw.logs.append(f"[bootstrap] GitHub tools bootstrap exited with code {code}. Check the bootstrap log lines above for details.")
     except Exception as e:
         gw.logs.append(f"[bootstrap] GitHub tools bootstrap failed: {e}")
 
