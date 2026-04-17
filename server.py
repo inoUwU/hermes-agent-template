@@ -367,7 +367,7 @@ class HermesRuntime:
                 env=env,
             )
             if proc.stdout is None:
-                raise RuntimeError("Failed to capture Hermes installer output")
+                raise RuntimeError("Failed to capture Hermes installer output (stdout=PIPE stream unavailable)")
             async for raw in proc.stdout:
                 line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
                 if line:
@@ -400,6 +400,24 @@ class HermesRuntime:
 
 runtime = HermesRuntime()
 cfg_lock = asyncio.Lock()
+background_tasks: set[asyncio.Task] = set()
+
+
+def spawn_task(coro, label: str) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    background_tasks.add(task)
+
+    def _done(done_task: asyncio.Task) -> None:
+        background_tasks.discard(done_task)
+        try:
+            exc = done_task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc:
+            gw.logs.append(f"[background] {label} failed: {exc}")
+
+    task.add_done_callback(_done)
+    return task
 
 
 async def bootstrap_github_tools() -> None:
@@ -414,7 +432,7 @@ async def bootstrap_github_tools() -> None:
             env=env,
         )
         if proc.stdout is None:
-            raise RuntimeError("Failed to capture GitHub tools installer output")
+            raise RuntimeError("Failed to capture GitHub tools installer output (stdout=PIPE stream unavailable)")
         async for raw in proc.stdout:
             line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
             if line:
@@ -636,18 +654,18 @@ async def auto_start():
     has_provider = any(data.get(k) for k in PROVIDER_KEYS)
     if (HERMES_BIN_DIR / "hermes").exists():
         if has_provider:
-            asyncio.create_task(gw.start())
+            spawn_task(gw.start(), "gateway startup")
         else:
             print("[server] No provider key found — gateway not started. Configure one in the admin UI.", flush=True)
     else:
         if runtime.start_update(force=False, start_gateway_when_ready=has_provider):
             print("[server] Hermes runtime missing — bootstrapping in background.", flush=True)
         else:
-            print("[server] Hermes runtime task was already active during startup.", flush=True)
+            print("[server] Hermes runtime update already in progress.", flush=True)
         if not has_provider:
             print("[server] No provider key found — gateway not started. Configure one in the admin UI.", flush=True)
     if GH_INSTALL_SCRIPT.exists():
-        asyncio.create_task(bootstrap_github_tools())
+        spawn_task(bootstrap_github_tools(), "GitHub tools bootstrap")
 
 
 @asynccontextmanager
