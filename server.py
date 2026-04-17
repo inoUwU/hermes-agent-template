@@ -42,6 +42,7 @@ HERMES_BIN_DIR = Path(HERMES_HOME) / "bin"
 HERMES_RUNTIME_DIR = Path(HERMES_HOME) / "runtime"
 HERMES_RUNTIME_META = HERMES_RUNTIME_DIR / "install-meta.json"
 INSTALL_SCRIPT = Path(__file__).parent / "install_hermes.sh"
+GH_INSTALL_SCRIPT = Path(__file__).parent / "install_github_tools.sh"
 GH_CONFIG_DIR = os.environ.get("GH_CONFIG_DIR", str(Path.home() / ".config" / "gh"))
 
 os.environ["PATH"] = f"{HERMES_BIN_DIR}:{os.environ.get('PATH', '')}"
@@ -318,6 +319,7 @@ class HermesRuntime:
         self.last_started_at: float | None = None
         self.last_finished_at: float | None = None
         self.task: asyncio.Task | None = None
+        self.autostart_gateway_after_update = False
 
     @property
     def busy(self) -> bool:
@@ -337,18 +339,20 @@ class HermesRuntime:
             "meta": meta,
         }
 
-    def start_update(self, force: bool = True) -> bool:
+    def start_update(self, force: bool = True, start_gateway_when_ready: bool = False) -> bool:
         if self.busy:
             return False
         self.state = "updating"
         self.last_error = ""
         self.last_started_at = time.time()
         self.last_finished_at = None
+        self.autostart_gateway_after_update = start_gateway_when_ready
         self.task = asyncio.create_task(self._update(force=force))
         return True
 
     async def _update(self, force: bool = True) -> None:
         was_running = gw.proc is not None and gw.proc.returncode is None
+        should_start_gateway = was_running or self.autostart_gateway_after_update
         mode = "--force" if force else "--missing-only"
         env = {**os.environ, "HERMES_HOME": HERMES_HOME}
         try:
@@ -362,7 +366,8 @@ class HermesRuntime:
                 stderr=asyncio.subprocess.STDOUT,
                 env=env,
             )
-            assert proc.stdout
+            if proc.stdout is None:
+                raise RuntimeError("Failed to capture Hermes installer output (stdout=PIPE stream unavailable)")
             async for raw in proc.stdout:
                 line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
                 if line:
@@ -375,8 +380,8 @@ class HermesRuntime:
             self.state = "ready"
             gw.logs.append("[runtime] Hermes update completed.")
 
-            if was_running:
-                gw.logs.append("[runtime] Restarting gateway with updated Hermes.")
+            if should_start_gateway:
+                gw.logs.append("[runtime] Starting gateway with available Hermes runtime.")
                 await gw.start()
         except Exception as e:
             self.state = "error"
@@ -389,11 +394,54 @@ class HermesRuntime:
                 except Exception as restart_error:
                     gw.logs.append(f"[runtime] Failed to restore gateway: {restart_error}")
         finally:
+            self.autostart_gateway_after_update = False
             self.last_finished_at = time.time()
 
 
 runtime = HermesRuntime()
 cfg_lock = asyncio.Lock()
+background_tasks: set[asyncio.Task] = set()
+
+
+def spawn_task(coro, label: str) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    background_tasks.add(task)
+
+    def _done(done_task: asyncio.Task) -> None:
+        background_tasks.discard(done_task)
+        try:
+            exc = done_task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc:
+            gw.logs.append(f"[background] {label} failed: {exc}")
+
+    task.add_done_callback(_done)
+    return task
+
+
+async def bootstrap_github_tools() -> None:
+    if not GH_INSTALL_SCRIPT.exists():
+        return
+    env = {**os.environ, "GH_CONFIG_DIR": GH_CONFIG_DIR, "HERMES_HOME": HERMES_HOME}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            str(GH_INSTALL_SCRIPT), "--missing-only",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=env,
+        )
+        if proc.stdout is None:
+            raise RuntimeError("Failed to capture GitHub tools installer output (stdout=PIPE stream unavailable)")
+        async for raw in proc.stdout:
+            line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
+            if line:
+                gw.logs.append(f"[bootstrap] {line}")
+        code = await proc.wait()
+        if code != 0:
+            gw.logs.append(f"[bootstrap] GitHub tools bootstrap exited with code {code}. Check the bootstrap log lines above for details.")
+    except Exception as e:
+        gw.logs.append(f"[bootstrap] GitHub tools bootstrap failed: {e}")
 
 
 # ── Route handlers ────────────────────────────────────────────────────────────
@@ -603,10 +651,21 @@ async def api_pairing_revoke(request: Request):
 # ── App lifecycle ─────────────────────────────────────────────────────────────
 async def auto_start():
     data = read_env(ENV_FILE)
-    if any(data.get(k) for k in PROVIDER_KEYS):
-        asyncio.create_task(gw.start())
+    has_provider = any(data.get(k) for k in PROVIDER_KEYS)
+    if (HERMES_BIN_DIR / "hermes").exists():
+        if has_provider:
+            spawn_task(gw.start(), "gateway startup")
+        else:
+            print("[server] No provider key found — gateway not started. Configure one in the admin UI.", flush=True)
     else:
-        print("[server] No provider key found — gateway not started. Configure one in the admin UI.", flush=True)
+        if runtime.start_update(force=False, start_gateway_when_ready=has_provider):
+            print("[server] Hermes runtime missing — bootstrapping in background.", flush=True)
+        else:
+            print("[server] Hermes runtime update already in progress.", flush=True)
+        if not has_provider:
+            print("[server] No provider key found — gateway not started. Configure one in the admin UI.", flush=True)
+    if GH_INSTALL_SCRIPT.exists():
+        spawn_task(bootstrap_github_tools(), "GitHub tools bootstrap")
 
 
 @asynccontextmanager
